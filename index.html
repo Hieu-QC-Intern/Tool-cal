@@ -38,12 +38,12 @@
               const key = o.order || '(no order)';
               if (!map.has(key)) map.set(key, { key, kg: 0, rows: [] });
               const g = map.get(key);
-              g.kg += Number(o.kg) || 0;
+              g.kg += parseFloat(o.kg) || 0;
               g.rows.push(o);
             });
             return Array.from(map.values());
           }
-          return orders.map((o) => ({ key: `${o.order}-${o.pkg}`, kg: Number(o.kg) || 0, rows: [o] }));
+          return orders.map((o) => ({ key: `${o.order}-${o.pkg}`, kg: parseFloat(o.kg) || 0, rows: [o] }));
         }
 
         function totalError(loads, targets) {
@@ -130,8 +130,8 @@
           const [groupByOrder, setGroupByOrder] = useState(true);
           const [result, setResult] = useState(null);
 
-          const totalKg = useMemo(() => orders.reduce((s, o) => s + (Number(o.kg) || 0), 0), [orders]);
-          const totalPercent = useMemo(() => drivers.reduce((s, d) => s + (Number(d.percent) || 0), 0), [drivers]);
+          const totalKg = useMemo(() => orders.reduce((s, o) => s + (parseFloat(o.kg) || 0), 0), [orders]);
+          const totalPercent = useMemo(() => drivers.reduce((s, d) => s + (parseFloat(d.percent) || 0), 0), [drivers]);
 
           const updateDriver = (id, field, val) =>
             setDrivers((ds) => ds.map((d) => (d.id === id ? { ...d, [field]: val } : d)));
@@ -147,7 +147,7 @@
 
           const runOptimize = () => {
             const items = buildItems(orders, groupByOrder);
-            const targets = drivers.map((d) => (totalKg * (Number(d.percent) || 0)) / 100);
+            const targets = drivers.map((d) => (totalKg * (parseFloat(d.percent) || 0)) / 100);
             const { items: sortedItems, assign, loads } = optimizeSplit(items, targets, drivers.length);
 
             const rowsAssigned = [];
@@ -217,6 +217,7 @@
                           />
                           <input
                             type="number"
+                            step="any"
                             className="w-16 text-sm text-right border-b py-1 outline-none bg-transparent font-mono"
                             style={{ borderColor: '#E2E5EA', color: '#1C2333' }}
                             value={d.percent}
@@ -318,6 +319,7 @@
                         />
                         <input
                           type="number"
+                          step="any"
                           className="col-span-3 text-sm border-b py-1 outline-none bg-transparent font-mono"
                           style={{ borderColor: '#E2E5EA', color: '#1C2333' }}
                           value={o.kg}
@@ -338,7 +340,7 @@
                   <div className="space-y-6">
                     <div>
                       <h2 className="text-sm font-semibold mb-3" style={{ color: '#1C2333' }}>
-                        Kết quả phân bổ — tổng sai số {result.err.toFixed(1)} kg
+                        Kết quả phân bổ — tổng sai số {result.err.toFixed(2)} kg
                       </h2>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         {result.byDriver.map((d, i) => {
@@ -354,15 +356,15 @@
                                 </span>
                               </div>
                               <div className="font-mono text-2xl font-bold" style={{ color: '#1C2333' }}>
-                                {d.actual.toFixed(1)}
+                                {d.actual.toFixed(2)}
                                 <span className="text-sm font-normal" style={{ color: '#9AA1AC' }}>
                                   {' '}
-                                  / {d.target.toFixed(1)} kg
+                                  / {d.target.toFixed(2)} kg
                                 </span>
                               </div>
-                              <div className="text-xs font-mono mb-2" style={{ color: d.diff === 0 ? '#5B6270' : d.diff > 0 ? '#E0527A' : '#2F86D6' }}>
+                              <div className="text-xs font-mono mb-2" style={{ color: Math.abs(d.diff) < 0.01 ? '#5B6270' : d.diff > 0 ? '#E0527A' : '#2F86D6' }}>
                                 {d.diff > 0 ? '+' : ''}
-                                {d.diff.toFixed(1)} kg lệch mục tiêu · {pctActual.toFixed(1)}% thực tế (mục tiêu {d.percent}%)
+                                {d.diff.toFixed(2)} kg lệch mục tiêu · {pctActual.toFixed(2)}% thực tế (mục tiêu {d.percent}%)
                               </div>
                               <div className="h-2 rounded-full w-full overflow-hidden" style={{ backgroundColor: '#EFF0F3' }}>
                                 <div
