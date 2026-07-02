@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QC Tool — Phân bổ khối lượng</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="m-0 p-0 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect } = React;
+
+        let uid = 100;
+        const nid = () => uid++;
+
+        const ROUTE_COLORS = ['#0F9B8E', '#7C5CFC', '#E0A526', '#E0527A', '#2F86D6', '#5C7A3B'];
+
+        // Helper components thay thế cho lucide-react để đơn giản hóa việc import qua CDN
+        const Icon = ({ name, size = 14 }) => {
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            });
+            return <i data-lucide={name} style={{ width: size, height: size }}></i>;
+        };
+
+        function buildItems(orders, groupByOrder) {
+          if (groupByOrder) {
+            const map = new Map();
+            orders.forEach((o) => {
+              const key = o.order || '(no order)';
+              if (!map.has(key)) map.set(key, { key, kg: 0, rows: [] });
+              const g = map.get(key);
+              g.kg += Number(o.kg) || 0;
+              g.rows.push(o);
+            });
+            return Array.from(map.values());
+          }
+          return orders.map((o) => ({ key: `${o.order}-${o.pkg}`, kg: Number(o.kg) || 0, rows: [o] }));
+        }
+
+        function totalError(loads, targets) {
+          return loads.reduce((s, l, i) => s + Math.abs(l - targets[i]), 0);
+        }
+
+        function optimizeSplit(items, targets, nDrivers) {
+          const sorted = [...items].sort((a, b) => b.kg - a.kg);
+          const loads = new Array(nDrivers).fill(0);
+          const assign = sorted.map(() => -1);
+
+          sorted.forEach((item, idx) => {
+            let best = 0,
+              bestDeficit = -Infinity;
+            for (let d = 0; d < nDrivers; d++) {
+              const deficit = targets[d] - loads[d];
+              if (deficit > bestDeficit) {
+                bestDeficit = deficit;
+                best = d;
+              }
+            }
+            assign[idx] = best;
+            loads[best] += item.kg;
+          });
+
+          let improved = true;
+          let iter = 0;
+          while (improved && iter < 3000) {
+            improved = false;
+            iter++;
+            for (let i = 0; i < sorted.length; i++) {
+              for (let j = i + 1; j < sorted.length; j++) {
+                const di = assign[i],
+                  dj = assign[j];
+                if (di === dj) continue;
+                const newLoads = [...loads];
+                newLoads[di] = newLoads[di] - sorted[i].kg + sorted[j].kg;
+                newLoads[dj] = newLoads[dj] - sorted[j].kg + sorted[i].kg;
+                if (totalError(newLoads, targets) < totalError(loads, targets) - 1e-9) {
+                  assign[i] = dj;
+                  assign[j] = di;
+                  loads[di] = newLoads[di];
+                  loads[dj] = newLoads[dj];
+                  improved = true;
+                }
+              }
+              for (let d = 0; d < nDrivers; d++) {
+                const di = assign[i];
+                if (d === di) continue;
+                const newLoads = [...loads];
+                newLoads[di] -= sorted[i].kg;
+                newLoads[d] += sorted[i].kg;
+                if (totalError(newLoads, targets) < totalError(loads, targets) - 1e-9) {
+                  loads[di] = newLoads[di];
+                  loads[d] = newLoads[d];
+                  assign[i] = d;
+                  improved = true;
+                }
+              }
+            }
+          }
+
+          return { items: sorted, assign, loads };
+        }
+
+        function DispatchSplit() {
+          const [drivers, setDrivers] = useState([
+            { id: nid(), name: 'TX1', percent: 20 },
+            { id: nid(), name: 'TX2', percent: 30 },
+            { id: nid(), name: 'TX3', percent: 50 },
+          ]);
+          const [orders, setOrders] = useState([
+            { id: nid(), order: 'Đ1', pkg: 'K1', kg: 8 },
+            { id: nid(), order: 'Đ1', pkg: 'K2', kg: 7 },
+            { id: nid(), order: 'Đ2', pkg: 'K3', kg: 10 },
+            { id: nid(), order: 'Đ2', pkg: 'K4', kg: 5 },
+            { id: nid(), order: 'Đ3', pkg: 'K5', kg: 12 },
+            { id: nid(), order: 'Đ3', pkg: 'K6', kg: 8 },
+            { id: nid(), order: 'Đ4', pkg: 'K7', kg: 15 },
+            { id: nid(), order: 'Đ4', pkg: 'K8', kg: 9 },
+            { id: nid(), order: 'Đ5', pkg: 'K9', kg: 14 },
+            { id: nid(), order: 'Đ5', pkg: 'K10', kg: 12 },
+          ]);
+          const [groupByOrder, setGroupByOrder] = useState(true);
+          const [result, setResult] = useState(null);
+
+          const totalKg = useMemo(() => orders.reduce((s, o) => s + (Number(o.kg) || 0), 0), [orders]);
+          const totalPercent = useMemo(() => drivers.reduce((s, d) => s + (Number(d.percent) || 0), 0), [drivers]);
+
+          const updateDriver = (id, field, val) =>
+            setDrivers((ds) => ds.map((d) => (d.id === id ? { ...d, [field]: val } : d)));
+          const addDriver = () =>
+            setDrivers((ds) => [...ds, { id: nid(), name: `TX${ds.length + 1}`, percent: 0 }]);
+          const removeDriver = (id) => setDrivers((ds) => (ds.length > 1 ? ds.filter((d) => d.id !== id) : ds));
+
+          const updateOrder = (id, field, val) =>
+            setOrders((os) => os.map((o) => (o.id === id ? { ...o, [field]: val } : o)));
+          const addOrder = () =>
+            setOrders((os) => [...os, { id: nid(), order: '', pkg: '', kg: 0 }]);
+          const removeOrder = (id) => setOrders((os) => os.filter((o) => o.id !== id));
+
+          const runOptimize = () => {
+            const items = buildItems(orders, groupByOrder);
+            const targets = drivers.map((d) => (totalKg * (Number(d.percent) || 0)) / 100);
+            const { items: sortedItems, assign, loads } = optimizeSplit(items, targets, drivers.length);
+
+            const rowsAssigned = [];
+            sortedItems.forEach((item, idx) => {
+              item.rows.forEach((r) => rowsAssigned.push({ ...r, driverIdx: assign[idx] }));
+            });
+            rowsAssigned.sort((a, b) => (a.order > b.order ? 1 : a.order < b.order ? -1 : 0));
+
+            const byDriver = drivers.map((d, i) => ({
+              ...d,
+              target: targets[i],
+              actual: loads[i],
+              diff: loads[i] - targets[i],
+            }));
+
+            setResult({ rowsAssigned, byDriver, err: totalError(loads, targets) });
+          };
+
+          const reset = () => setResult(null);
+
+          const percentWarn = Math.abs(totalPercent - 100) > 0.001;
+
+          return (
+            <div className="min-h-screen w-full" style={{ backgroundColor: '#F5F6F8' }}>
+              <div className="max-w-5xl mx-auto px-6 py-10">
+                {/* Header */}
+                <div className="mb-8">
+                  <div className="text-xs tracking-widest font-semibold" style={{ color: '#7C5CFC' }}>
+                    QC TOOL — PHÂN BỔ KHỐI LƯỢNG
+                  </div>
+                  <h1 className="text-3xl font-bold mt-1" style={{ color: '#1C2333' }}>
+                    Rải đơn theo tỷ lệ % kg
+                  </h1>
+                  <p className="text-sm mt-1" style={{ color: '#5B6270' }}>
+                    Chia đơn/kiện cho từng tài xế bám sát tỷ lệ % khối lượng, sai số nhỏ nhất có thể.
+                  </p>
+                </div>
+
+                {/* Config row */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-6">
+                  {/* Drivers */}
+                  <div className="bg-white rounded-lg border p-4" style={{ borderColor: '#E2E5EA' }}>
+                    <div className="flex items-center justify-between mb-3">
+                      <h2 className="text-sm font-semibold" style={{ color: '#1C2333' }}>
+                        Tài xế &amp; tỷ lệ %
+                      </h2>
+                      <button
+                        onClick={addDriver}
+                        className="flex items-center gap-1 text-xs px-2 py-1 rounded cursor-pointer"
+                        style={{ color: '#7C5CFC', backgroundColor: '#F1EEFE' }}
+                      >
+                        <Icon name="plus" size={14} /> Thêm
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {drivers.map((d, i) => (
+                        <div key={d.id} className="flex items-center gap-2">
+                          <span
+                            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                            style={{ backgroundColor: ROUTE_COLORS[i % ROUTE_COLORS.length] }}
+                          />
+                          <input
+                            className="flex-1 text-sm border-b py-1 outline-none bg-transparent"
+                            style={{ borderColor: '#E2E5EA', color: '#1C2333' }}
+                            value={d.name}
+                            onChange={(e) => updateDriver(d.id, 'name', e.target.value)}
+                          />
+                          <input
+                            type="number"
+                            className="w-16 text-sm text-right border-b py-1 outline-none bg-transparent font-mono"
+                            style={{ borderColor: '#E2E5EA', color: '#1C2333' }}
+                            value={d.percent}
+                            onChange={(e) => updateDriver(d.id, 'percent', e.target.value)}
+                          />
+                          <span className="text-xs" style={{ color: '#9AA1AC' }}>
+                            %
+                          </span>
+                          <button onClick={() => removeDriver(d.id)} className="p-1 cursor-pointer" style={{ color: '#C7CBD3' }}>
+                            <Icon name="trash-2" size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div
+                      className="mt-3 text-xs font-mono"
+                      style={{ color: percentWarn ? '#E0527A' : '#5B6270' }}
+                    >
+                      Tổng tỷ lệ: {totalPercent}% {percentWarn && '— cần bằng 100%'}
+                    </div>
+                  </div>
+
+                  {/* Settings */}
+                  <div className="bg-white rounded-lg border p-4 flex flex-col justify-between" style={{ borderColor: '#E2E5EA' }}>
+                    <div>
+                      <h2 className="text-sm font-semibold mb-3" style={{ color: '#1C2333' }}>
+                        Thiết lập
+                      </h2>
+                      <div className="text-xs font-mono mb-3" style={{ color: '#5B6270' }}>
+                        Tổng khối lượng (tự tính): <span className="font-bold" style={{ color: '#1C2333' }}>{totalKg} kg</span>
+                      </div>
+                      <label className="flex items-start gap-2 text-sm cursor-pointer" style={{ color: '#1C2333' }}>
+                        <input
+                          type="checkbox"
+                          checked={groupByOrder}
+                          onChange={(e) => setGroupByOrder(e.target.checked)}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          Giữ nguyên đơn (không tách kiện trong cùng 1 đơn cho 2 tài xế khác nhau)
+                        </span>
+                      </label>
+                    </div>
+                    <div className="flex gap-2 mt-4">
+                      <button
+                        onClick={runOptimize}
+                        className="flex items-center gap-1.5 text-sm font-medium px-4 py-2 rounded text-white cursor-pointer"
+                        style={{ backgroundColor: '#1C2333' }}
+                      >
+                        <Icon name="play" size={14} /> Tính phương án
+                      </button>
+                      {result && (
+                        <button
+                          onClick={reset}
+                          className="flex items-center gap-1.5 text-sm px-3 py-2 rounded cursor-pointer"
+                          style={{ color: '#5B6270', backgroundColor: '#F1F2F4' }}
+                        >
+                          <Icon name="refresh-ccw" size={14} /> Xoá kết quả
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Orders table */}
+                <div className="bg-white rounded-lg border p-4 mb-6" style={{ borderColor: '#E2E5EA' }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-sm font-semibold" style={{ color: '#1C2333' }}>
+                      Danh sách đơn / kiện
+                    </h2>
+                    <button
+                      onClick={addOrder}
+                      className="flex items-center gap-1 text-xs px-2 py-1 rounded cursor-pointer"
+                      style={{ color: '#7C5CFC', backgroundColor: '#F1EEFE' }}
+                    >
+                      <Icon name="plus" size={14} /> Thêm dòng
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-12 gap-2 text-xs font-semibold pb-2 mb-1 border-b" style={{ color: '#9AA1AC', borderColor: '#E2E5EA' }}>
+                    <div className="col-span-3">Đơn</div>
+                    <div className="col-span-4">Kiện</div>
+                    <div className="col-span-3">Kg</div>
+                    <div className="col-span-2"></div>
+                  </div>
+                  <div className="space-y-1 max-h-80 overflow-y-auto">
+                    {orders.map((o) => (
+                      <div key={o.id} className="grid grid-cols-12 gap-2 items-center">
+                        <input
+                          className="col-span-3 text-sm border-b py-1 outline-none bg-transparent"
+                          style={{ borderColor: '#E2E5EA', color: '#1C2333' }}
+                          value={o.order}
+                          onChange={(e) => updateOrder(o.id, 'order', e.target.value)}
+                        />
+                        <input
+                          className="col-span-4 text-sm border-b py-1 outline-none bg-transparent"
+                          style={{ borderColor: '#E2E5EA', color: '#1C2333' }}
+                          value={o.pkg}
+                          onChange={(e) => updateOrder(o.id, 'pkg', e.target.value)}
+                        />
+                        <input
+                          type="number"
+                          className="col-span-3 text-sm border-b py-1 outline-none bg-transparent font-mono"
+                          style={{ borderColor: '#E2E5EA', color: '#1C2333' }}
+                          value={o.kg}
+                          onChange={(e) => updateOrder(o.id, 'kg', e.target.value)}
+                        />
+                        <div className="col-span-2 text-right">
+                          <button onClick={() => removeOrder(o.id)} className="p-1 cursor-pointer" style={{ color: '#C7CBD3' }}>
+                            <Icon name="trash-2" size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Results */}
+                {result && (
+                  <div className="space-y-6">
+                    <div>
+                      <h2 className="text-sm font-semibold mb-3" style={{ color: '#1C2333' }}>
+                        Kết quả phân bổ — tổng sai số {result.err.toFixed(1)} kg
+                      </h2>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        {result.byDriver.map((d, i) => {
+                          const color = ROUTE_COLORS[i % ROUTE_COLORS.length];
+                          const pctActual = totalKg ? (d.actual / totalKg) * 100 : 0;
+                          const fillPct = Math.min(100, (d.actual / (d.target || 1)) * 100);
+                          return (
+                            <div key={d.id} className="bg-white rounded-lg border p-4" style={{ borderColor: '#E2E5EA' }}>
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                                <span className="text-sm font-semibold" style={{ color: '#1C2333' }}>
+                                  {d.name}
+                                </span>
+                              </div>
+                              <div className="font-mono text-2xl font-bold" style={{ color: '#1C2333' }}>
+                                {d.actual.toFixed(1)}
+                                <span className="text-sm font-normal" style={{ color: '#9AA1AC' }}>
+                                  {' '}
+                                  / {d.target.toFixed(1)} kg
+                                </span>
+                              </div>
+                              <div className="text-xs font-mono mb-2" style={{ color: d.diff === 0 ? '#5B6270' : d.diff > 0 ? '#E0527A' : '#2F86D6' }}>
+                                {d.diff > 0 ? '+' : ''}
+                                {d.diff.toFixed(1)} kg lệch mục tiêu · {pctActual.toFixed(1)}% thực tế (mục tiêu {d.percent}%)
+                              </div>
+                              <div className="h-2 rounded-full w-full overflow-hidden" style={{ backgroundColor: '#EFF0F3' }}>
+                                <div
+                                  className="h-full rounded-full"
+                                  style={{ width: `${fillPct}%`, backgroundColor: color }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-lg border p-4" style={{ borderColor: '#E2E5EA' }}>
+                      <h2 className="text-sm font-semibold mb-3" style={{ color: '#1C2333' }}>
+                        Chi tiết phân công
+                      </h2>
+                      <div className="grid grid-cols-12 gap-2 text-xs font-semibold pb-2 mb-1 border-b" style={{ color: '#9AA1AC', borderColor: '#E2E5EA' }}>
+                        <div className="col-span-3">Đơn</div>
+                        <div className="col-span-3">Kiện</div>
+                        <div className="col-span-2">Kg</div>
+                        <div className="col-span-
